@@ -37,7 +37,7 @@
   .stat .val { font-size: 1.8rem; font-weight: 700; margin-top: 4px; }
   .stat .val small { font-size: .9rem; font-weight: 400; color: var(--muted); }
   .stat.off { opacity: .35; }
-  .chart-wrap { position: relative; height: 520px; }
+  .chart-wrap { position: relative; height: 520px; user-select: none; }
   table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: 8px; }
   th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border); }
   th:first-child, td:first-child { text-align: left; }
@@ -101,6 +101,13 @@
     </div>
 
     <div class="group">
+      <h2>Wykluczone z obliczeń</h2>
+      <div id="excludedInfo" class="note" style="margin-top:0">Brak. Kliknij dwukrotnie punkt na wykresie, aby go wykluczyć.</div>
+      <table id="excludedList"></table>
+      <button type="button" class="btn ghost" id="restoreAll" style="margin-top:10px" hidden>Przywróć wszystkie</button>
+    </div>
+
+    <div class="group">
       <h2>Dodaj dane ręcznie</h2>
       <form id="addForm" novalidate>
         <label class="form-row">Rozmiar
@@ -136,6 +143,7 @@
     </div>
     <div class="panel">
       <div class="chart-wrap"><canvas id="chart"></canvas></div>
+      <div class="note">Kliknij dwukrotnie punkt na wykresie, aby wykluczyć go z obliczeń percentyli (zmieni się w smutną chmurkę). Ponowny dwuklik przywraca punkt.</div>
       <div class="note">Percentyle liczone metodą interpolacji liniowej (jak PERCENTILE.INC w Excelu). Np. 85. percentyl = 85% elementów zostało zrealizowanych w tym czasie lub krócej.</div>
     </div>
   </section>
@@ -240,7 +248,8 @@ function update() {
   document.getElementById('rangeVal').textContent = step >= totalSteps ? 'Całość danych' : 'Ostatnie ' + monthsLabel(step * 3);
   document.getElementById('rangeDates').textContent = `${fmtDate(start ? new Date(start.getTime() + 864e5) : minDate)} – ${fmtDate(maxDate)}`;
 
-  const active = data.filter(r => sizes.includes(r.size) && inWindow(r, start));
+  const counted = r => inWindow(r, start) && !excluded.has(r.key);
+  const active = data.filter(r => sizes.includes(r.size) && counted(r));
   const lts = active.map(r => r.lt).sort((a, b) => a - b);
   const pv = {}; PCTS.forEach(p => pv[p] = percentile(lts, p));
 
@@ -255,22 +264,25 @@ function update() {
   // Tabela wg rozmiaru (w wybranym okresie)
   let html = '<tr><th>Rozmiar</th><th>n</th>' + PCTS.map(p => `<th>P${p}</th>`).join('') + '</tr>';
   SIZES.forEach(s => {
-    const v = data.filter(r => r.size === s && inWindow(r, start)).map(r => r.lt).sort((a, b) => a - b);
+    const v = data.filter(r => r.size === s && counted(r)).map(r => r.lt).sort((a, b) => a - b);
     html += `<tr style="opacity:${sizes.includes(s) ? 1 : .4}"><td><span class="dot" style="background:${COLORS[s]}"></span> ${s}</td><td>${v.length}</td>` +
       PCTS.map(p => `<td>${fmtNum(percentile(v, p))}</td>`).join('') + '</tr>';
   });
   document.getElementById('breakdown').innerHTML = html;
+  renderExcluded();
 
   chart.data.datasets = SIZES.filter(s => sizes.includes(s)).map(s => {
     const pts = data.filter(r => r.size === s);
+    const ex = r => excluded.has(r.key);
     return {
       label: s,
-      data: pts.map(r => ({ x: r.date.getTime(), y: r.lt, manual: !!r.manual })),
+      data: pts.map(r => ({ x: r.date.getTime(), y: r.lt, manual: !!r.manual, key: r.key, excluded: ex(r) })),
       backgroundColor: pts.map(r => inWindow(r, start) ? COLORS[s] : COLORS[s] + '33'),
       borderColor: pts.map(r => r.manual ? (inWindow(r, start) ? '#ffffff' : '#ffffff55') : (inWindow(r, start) ? COLORS[s] : COLORS[s] + '55')),
-      borderWidth: pts.map(r => r.manual ? 2 : 1),
-      pointStyle: pts.map(r => r.manual ? 'rectRot' : 'circle'),
-      pointRadius: pts.map(r => r.manual ? 8 : 6), pointHoverRadius: 9
+      borderWidth: pts.map(r => r.manual && !ex(r) ? 2 : 1),
+      pointStyle: pts.map(r => ex(r) ? sadCloud(s, !inWindow(r, start)) : (r.manual ? 'rectRot' : 'circle')),
+      pointRadius: pts.map(r => ex(r) ? 13 : (r.manual ? 8 : 6)), pointHoverRadius: pts.map(r => ex(r) ? 15 : 9),
+      pointHitRadius: 4
     };
   });
   chart.$overlay = { start, pcts: pcts.map(p => ({ p, v: pv[p] })).filter(o => o.v != null) };
@@ -346,7 +358,10 @@ function initChart() {
       plugins: {
         legend: { labels: { usePointStyle: true, color: '#e4e7ef',
           generateLabels: c => c.data.datasets.map((d, i) => ({ text: d.label, fillStyle: COLORS[d.label], strokeStyle: COLORS[d.label], pointStyle: 'circle', hidden: !c.isDatasetVisible(i), datasetIndex: i, fontColor: '#e4e7ef' })) } },
-        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y} dni (${fmtDate(new Date(c.parsed.x))})${c.raw.manual ? ' · ręcznie' : ''}` } }
+        tooltip: { callbacks: {
+          label: c => `${c.dataset.label}: ${c.parsed.y} dni (${fmtDate(new Date(c.parsed.x))})${c.raw.manual ? ' · ręcznie' : ''}${c.raw.excluded ? ' · wykluczony' : ''}`,
+          footer: items => items.length ? (items[0].raw.excluded ? 'Kliknij dwukrotnie, aby przywrócić' : 'Kliknij dwukrotnie, aby wykluczyć') : ''
+        } }
       }
     }
   });
@@ -394,6 +409,7 @@ function saveManual() {
 }
 
 function refreshData() {
+  manual.forEach(m => m.key = 'm:' + m.id);
   data = [...baseData, ...manual].sort((a, b) => a.date - b.date);
   minDate = data[0].date; maxDate = data[data.length - 1].date;
   initRange();
@@ -454,24 +470,112 @@ function initForm() {
     const id = e.target.closest('.del')?.dataset.id;
     if (!id) return;
     manual = manual.filter(m => m.id !== id);
+    if (excluded.delete('m:' + id)) saveExcluded();
     saveManual(); refreshData(); update();
     showMsg('Usunięto wpis.', true);
   });
 
   document.getElementById('clearManual').addEventListener('click', () => {
     if (!confirm('Usunąć wszystkie ręcznie dodane wpisy?')) return;
+    manual.forEach(m => excluded.delete('m:' + m.id)); saveExcluded();
     manual = []; saveManual(); refreshData(); update();
     showMsg('Usunięto wszystkie ręczne wpisy.', true);
   });
 }
 
+// ---- Wykluczanie punktów z obliczeń (dwuklik na wykresie) ----
+const EXCLUDED_KEY = 'leadTimes.excluded.v1';
+let excluded = new Set();
+
+// Stabilny klucz rekordu z pliku: data|rozmiar|czas|nr wystąpienia (na wypadek duplikatów)
+function assignBaseKeys(recs) {
+  const seen = {};
+  recs.forEach(r => {
+    const k = `b:${toDMY(r.date)}|${r.size}|${r.lt}`;
+    seen[k] = (seen[k] || 0) + 1;
+    r.key = `${k}|${seen[k]}`;
+  });
+}
+
+function loadExcluded() {
+  try { return new Set(JSON.parse(localStorage.getItem(EXCLUDED_KEY) || '[]')); } catch { return new Set(); }
+}
+
+function saveExcluded() {
+  try { localStorage.setItem(EXCLUDED_KEY, JSON.stringify([...excluded])); } catch (e) { console.warn(e); }
+}
+
+function toggleExcluded(key) {
+  if (!excluded.delete(key)) excluded.add(key);
+  saveExcluded(); update();
+}
+
+function renderExcluded() {
+  const items = data.filter(r => excluded.has(r.key)).sort((a, b) => a.date - b.date);
+  document.getElementById('excludedInfo').hidden = items.length > 0;
+  document.getElementById('restoreAll').hidden = !items.length;
+  document.getElementById('excludedList').innerHTML = items.length
+    ? '<tr><th>Rozm.</th><th>Data</th><th>Czas</th><th></th></tr>' + items.map(r =>
+      `<tr><td><span class="dot" style="background:${COLORS[r.size]}"></span> ${r.size}</td><td>${toDMY(r.date)}</td><td>${r.lt} dni</td>` +
+      `<td><button type="button" class="del restore" data-key="${r.key}" title="Przywróć do obliczeń" aria-label="Przywróć">↺</button></td></tr>`).join('')
+    : '';
+}
+
+// Ikona "smutnej chmurki" – rysowana w wysokiej rozdzielczości i skalowana do rozmiaru punktu
+const cloudCache = {};
+function sadCloud(size, dim) {
+  const id = size + (dim ? '-dim' : '');
+  if (cloudCache[id]) return cloudCache[id];
+  const S = 4, W = 30, H = 24;
+  const cv = document.createElement('canvas');
+  cv.width = W * S; cv.height = H * S;
+  const g = cv.getContext('2d');
+  g.scale(S, S);
+  g.globalAlpha = dim ? 0.35 : 1;
+  const puffs = [[9, 14, 6], [15, 10, 7.5], [21.5, 13, 6], [15, 16, 6]];
+  const shape = () => { g.beginPath(); puffs.forEach(([x, y, r]) => { g.moveTo(x + r, y); g.arc(x, y, r, 0, Math.PI * 2); }); };
+  g.lineWidth = 2.4; g.strokeStyle = COLORS[size]; shape(); g.stroke();
+  g.fillStyle = '#c9cfdc'; shape(); g.fill();
+  g.fillStyle = '#2a2f3d';
+  g.beginPath(); g.arc(12.2, 13, 1.3, 0, Math.PI * 2); g.arc(17.8, 13, 1.3, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#2a2f3d'; g.lineWidth = 1.3; g.lineCap = 'round';
+  g.beginPath(); g.arc(15, 19.6, 2.8, Math.PI * 1.15, Math.PI * 1.85); g.stroke();
+  g.fillStyle = '#4fc3f7';
+  g.beginPath(); g.moveTo(11.4, 15); g.quadraticCurveTo(10.4, 17.3, 11.4, 17.5); g.quadraticCurveTo(12.4, 17.3, 11.4, 15); g.fill();
+  const img = new Image(Math.round(W * 1.3), Math.round(H * 1.3));
+  img.onload = () => chart && chart.update('none');
+  img.src = cv.toDataURL();
+  return cloudCache[id] = img;
+}
+
+function initExclusion() {
+  const canvas = document.getElementById('chart');
+  canvas.addEventListener('dblclick', e => {
+    const els = chart.getElementsAtEventForMode(e, 'nearest', { intersect: true }, false);
+    if (!els.length) return;
+    const pt = chart.data.datasets[els[0].datasetIndex].data[els[0].index];
+    toggleExcluded(pt.key);
+  });
+  canvas.addEventListener('mousemove', e => {
+    canvas.style.cursor = chart.getElementsAtEventForMode(e, 'nearest', { intersect: true }, false).length ? 'pointer' : 'default';
+  });
+  document.getElementById('excludedList').addEventListener('click', e => {
+    const key = e.target.closest('.restore')?.dataset.key;
+    if (key) toggleExcluded(key);
+  });
+  document.getElementById('restoreAll').addEventListener('click', () => { excluded.clear(); saveExcluded(); update(); });
+}
+
 (async () => {
   baseData = await loadData();
+  assignBaseKeys(baseData);
+  excluded = loadExcluded();
   manual = loadManual();
   refreshData();
   initChart();
   document.querySelectorAll('.size, .pct, #range').forEach(e => e.addEventListener('input', update));
   initForm();
+  initExclusion();
   update();
 })();
 </script>
