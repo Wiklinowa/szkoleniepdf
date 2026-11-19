@@ -26,7 +26,26 @@
   .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
   .bar { width: 18px; height: 3px; display: inline-block; }
   input[type=checkbox] { accent-color: #7c8cff; width: 16px; height: 16px; }
-  input[type=range] { width: 100%; accent-color: #7c8cff; }
+  .dual { position: relative; height: 26px; margin: 4px 8px 0; }
+  .dual-track, .dual-fill { position: absolute; top: 11px; height: 4px; border-radius: 2px; }
+  .dual-track { left: 0; right: 0; background: var(--border); }
+  .dual-fill { background: #7c8cff; }
+  .dual input[type=range] {
+    position: absolute; left: -8px; top: 0; width: calc(100% + 16px); height: 26px; margin: 0;
+    -webkit-appearance: none; appearance: none; background: transparent; pointer-events: none;
+  }
+  .dual input[type=range]::-webkit-slider-runnable-track { background: transparent; height: 26px; }
+  .dual input[type=range]::-moz-range-track { background: transparent; }
+  .dual input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; pointer-events: auto; cursor: grab; width: 16px; height: 16px; margin-top: 5px;
+    border-radius: 50%; background: #7c8cff; border: 2px solid #e4e7ef;
+  }
+  .dual input[type=range]::-moz-range-thumb {
+    pointer-events: auto; cursor: grab; width: 12px; height: 12px; border-radius: 50%; background: #7c8cff; border: 2px solid #e4e7ef;
+  }
+  .dual input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px #7c8cff66; }
+  .ticks { position: relative; height: 14px; margin: 2px 8px 0; }
+  .ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
   .range-val { font-size: 1.1rem; font-weight: 600; margin-bottom: 6px; }
   .range-dates { color: var(--muted); font-size: .85rem; margin-top: 6px; }
   .ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: .7rem; padding: 0 2px; }
@@ -89,10 +108,15 @@
     <div class="group">
       <h2>Okres prognozy</h2>
       <div class="range-val" id="rangeVal"></div>
-      <input type="range" id="range" min="1" step="1">
+      <div class="dual">
+        <div class="dual-track"></div>
+        <div class="dual-fill" id="rangeFill"></div>
+        <input type="range" id="rangeFrom" min="0" step="1" aria-label="Początek okresu">
+        <input type="range" id="rangeTo" min="0" step="1" aria-label="Koniec okresu">
+      </div>
       <div class="ticks" id="ticks"></div>
       <div class="range-dates" id="rangeDates"></div>
-      <div class="note">Okres liczony wstecz od najnowszej daty ukończenia, co 3 miesiące. Punkty spoza okresu są wyszarzone i nie wchodzą do obliczeń.</div>
+      <div class="note">Przesuń lewy uchwyt, aby zmienić początek okresu, a prawy – koniec. Krok i minimalny zakres: 3 miesiące (liczone od najnowszej daty ukończenia). Punkty spoza okresu są wyszarzone i nie wchodzą do obliczeń.</div>
     </div>
 
     <div class="group">
@@ -226,29 +250,51 @@ const monthsLabel = m => m === 3 ? '3 miesiące' : (m % 12 === 0 ? `${m} mies. (
 
 let data = [], chart, maxDate, minDate, totalSteps;
 
-function windowStart() {
-  const step = +document.getElementById('range').value;
-  if (step >= totalSteps) return null; // całość
+// Pozycja suwaka i (0..totalSteps) = granica: najnowsza data minus 3·(totalSteps − i) miesięcy
+function boundary(i) {
   const d = new Date(maxDate);
-  d.setMonth(d.getMonth() - step * 3);
+  d.setMonth(d.getMonth() - 3 * (totalSteps - i));
   return d;
 }
+
+const rFrom = () => document.getElementById('rangeFrom');
+const rTo = () => document.getElementById('rangeTo');
 
 function getState() {
   const sizes = [...document.querySelectorAll('.size:checked')].map(e => e.value);
   const pcts = [...document.querySelectorAll('.pct:checked')].map(e => +e.value);
-  return { sizes, pcts, start: windowStart() };
+  const lo = +rFrom().value, hi = +rTo().value;
+  return { sizes, pcts, lo, hi, start: lo > 0 ? boundary(lo) : null, end: hi < totalSteps ? boundary(hi) : null };
 }
 
-const inWindow = (r, start) => !start || r.date > start;
+// Okno: (start, end] – null oznacza brak ograniczenia z danej strony
+let win = { start: null, end: null };
+const inWindow = r => (!win.start || r.date > win.start) && (!win.end || r.date <= win.end);
+
+function onRangeInput(e) {
+  const f = rFrom(), t = rTo();
+  if (+t.value - +f.value < 1) {
+    if (e && e.target === f) f.value = +t.value - 1; else t.value = +f.value + 1;
+  }
+  update();
+}
 
 function update() {
-  const { sizes, pcts, start } = getState();
-  const step = +document.getElementById('range').value;
-  document.getElementById('rangeVal').textContent = step >= totalSteps ? 'Całość danych' : 'Ostatnie ' + monthsLabel(step * 3);
-  document.getElementById('rangeDates').textContent = `${fmtDate(start ? new Date(start.getTime() + 864e5) : minDate)} – ${fmtDate(maxDate)}`;
+  const { sizes, pcts, lo, hi, start, end } = getState();
+  win = { start, end };
+  const pct = i => (i / totalSteps) * 100;
+  const fill = document.getElementById('rangeFill');
+  fill.style.left = pct(lo) + '%'; fill.style.width = (pct(hi) - pct(lo)) + '%';
+  // Uchwyt "od" na wierzchu, gdy oba są przy prawej krawędzi – inaczej nie dałoby się go chwycić
+  rFrom().style.zIndex = lo >= totalSteps - 1 ? 3 : 2; rTo().style.zIndex = lo >= totalSteps - 1 ? 2 : 3;
 
-  const counted = r => inWindow(r, start) && !excluded.has(r.key);
+  const months = (hi - lo) * 3;
+  document.getElementById('rangeVal').textContent = lo === 0 && hi === totalSteps ? 'Całość danych'
+    : (hi === totalSteps ? 'Ostatnie ' : '') + monthsLabel(months);
+  const firstIn = start ? new Date(start.getTime() + 864e5) : minDate;
+  document.getElementById('rangeDates').textContent = `${fmtDate(firstIn)} – ${fmtDate(end || maxDate)}`;
+
+  const counted = r => inWindow(r) && !excluded.has(r.key);
   const active = data.filter(r => sizes.includes(r.size) && counted(r));
   const lts = active.map(r => r.lt).sort((a, b) => a - b);
   const pv = {}; PCTS.forEach(p => pv[p] = percentile(lts, p));
@@ -277,41 +323,46 @@ function update() {
     return {
       label: s,
       data: pts.map(r => ({ x: r.date.getTime(), y: r.lt, manual: !!r.manual, key: r.key, excluded: ex(r) })),
-      backgroundColor: pts.map(r => inWindow(r, start) ? COLORS[s] : COLORS[s] + '33'),
-      borderColor: pts.map(r => r.manual ? (inWindow(r, start) ? '#ffffff' : '#ffffff55') : (inWindow(r, start) ? COLORS[s] : COLORS[s] + '55')),
+      backgroundColor: pts.map(r => inWindow(r) ? COLORS[s] : COLORS[s] + '33'),
+      borderColor: pts.map(r => r.manual ? (inWindow(r) ? '#ffffff' : '#ffffff55') : (inWindow(r) ? COLORS[s] : COLORS[s] + '55')),
       borderWidth: pts.map(r => r.manual && !ex(r) ? 2 : 1),
-      pointStyle: pts.map(r => ex(r) ? sadCloud(s, !inWindow(r, start)) : (r.manual ? 'rectRot' : 'circle')),
+      pointStyle: pts.map(r => ex(r) ? sadCloud(s, !inWindow(r)) : (r.manual ? 'rectRot' : 'circle')),
       pointRadius: pts.map(r => ex(r) ? 13 : (r.manual ? 8 : 6)), pointHoverRadius: pts.map(r => ex(r) ? 15 : 9),
       pointHitRadius: 4
     };
   });
-  chart.$overlay = { start, pcts: pcts.map(p => ({ p, v: pv[p] })).filter(o => o.v != null) };
+  chart.$overlay = { start, end, pcts: pcts.map(p => ({ p, v: pv[p] })).filter(o => o.v != null) };
   chart.update();
 }
 
 const overlayPlugin = {
   id: 'overlay',
   beforeDatasetsDraw(c) {
-    const o = c.$overlay; if (!o || !o.start) return;
+    const o = c.$overlay; if (!o || (!o.start && !o.end)) return;
     const { ctx, chartArea: a, scales: { x } } = c;
-    const px = Math.max(a.left, Math.min(a.right, x.getPixelForValue(o.start.getTime())));
+    const clampX = d => Math.max(a.left, Math.min(a.right, x.getPixelForValue(d.getTime())));
     ctx.save();
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.fillRect(a.left, a.top, px - a.left, a.bottom - a.top);
     ctx.strokeStyle = '#7c8cff'; ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+    const edge = (px, fromX, toX) => {
+      ctx.fillRect(fromX, a.top, toX - fromX, a.bottom - a.top);
+      ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+    };
+    if (o.start) { const px = clampX(o.start); edge(px, a.left, px); }
+    if (o.end) { const px = clampX(o.end); edge(px, px, a.right); }
     ctx.restore();
   },
   afterDatasetsDraw(c) {
     const o = c.$overlay; if (!o) return;
     const { ctx, chartArea: a, scales: { x, y } } = c;
     const left = o.start ? Math.max(a.left, x.getPixelForValue(o.start.getTime())) : a.left;
+    const right = o.end ? Math.min(a.right, x.getPixelForValue(o.end.getTime())) : a.right;
     ctx.save();
     const lines = o.pcts.map(({ p, v }) => ({ p, v, py: y.getPixelForValue(v) }))
       .filter(l => l.py >= a.top && l.py <= a.bottom);
     lines.forEach(({ p, py }) => {
       ctx.strokeStyle = COLORS[p]; ctx.lineWidth = 2; ctx.setLineDash([8, 5]);
-      ctx.beginPath(); ctx.moveTo(left, py); ctx.lineTo(a.right, py); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(left, py); ctx.lineTo(right, py); ctx.stroke();
     });
     ctx.setLineDash([]);
     ctx.font = '600 12px system-ui, sans-serif';
@@ -322,9 +373,10 @@ const overlayPlugin = {
       prevBottom = top + 16;
       const label = `P${p}: ${fmtNum(v)} dni`;
       const w = ctx.measureText(label).width + 10;
-      ctx.fillStyle = '#0f1117dd'; ctx.fillRect(a.right - w - 4, top, w, 16);
+      const lx = Math.max(right, left + w + 4);
+      ctx.fillStyle = '#0f1117dd'; ctx.fillRect(lx - w - 4, top, w, 16);
       ctx.fillStyle = COLORS[p]; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      ctx.fillText(label, a.right - 9, top + 8);
+      ctx.fillText(label, lx - 9, top + 8);
     });
     ctx.restore();
   }
@@ -370,14 +422,23 @@ function initChart() {
 function initRange() {
   const months = (maxDate.getFullYear() - minDate.getFullYear()) * 12 + (maxDate.getMonth() - minDate.getMonth())
     + (maxDate.getDate() >= minDate.getDate() ? 0 : -1);
-  const r = document.getElementById('range');
-  const prevTotal = totalSteps, prevVal = +r.value;
+  const f = rFrom(), t = rTo();
+  const prevTotal = totalSteps, prevLo = +f.value, prevHi = +t.value;
   totalSteps = Math.max(1, Math.ceil((months + 1) / 3));
-  r.max = totalSteps;
-  // Zachowaj wybór użytkownika; "Całość" pozostaje "Całością" po zmianie zakresu danych
-  r.value = !prevTotal || prevVal >= prevTotal ? totalSteps : Math.min(prevVal, totalSteps);
-  document.getElementById('ticks').innerHTML = Array.from({ length: totalSteps }, (_, i) =>
-    `<span>${i + 1 === totalSteps ? 'Całość' : (i + 1) * 3}</span>`).join('');
+  f.max = t.max = totalSteps;
+  // Zachowaj wybór przy zmianie danych: skrajne pozycje zostają skrajne, pozostałe liczone od najnowszej daty
+  let lo = 0, hi = totalSteps;
+  if (prevTotal) {
+    lo = prevLo === 0 ? 0 : Math.max(0, totalSteps - (prevTotal - prevLo));
+    hi = prevHi === prevTotal ? totalSteps : Math.max(1, totalSteps - (prevTotal - prevHi));
+    if (hi - lo < 1) lo = hi - 1;
+  }
+  f.value = lo; t.value = hi;
+  const lbl = d => `${MONTH_SHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
+  const every = Math.ceil((totalSteps + 1) / 7); // ograniczenie liczby etykiet przy długich okresach
+  document.getElementById('ticks').innerHTML = Array.from({ length: totalSteps + 1 }, (_, i) =>
+    (i % every === 0 || i === totalSteps) && !(i !== totalSteps && totalSteps - i < every)
+      ? `<span style="left:${(i / totalSteps) * 100}%">${i === 0 ? 'start' : lbl(boundary(i))}</span>` : '').join('');
 }
 
 // ---- Dane wprowadzane ręcznie (localStorage) ----
@@ -573,7 +634,8 @@ function initExclusion() {
   manual = loadManual();
   refreshData();
   initChart();
-  document.querySelectorAll('.size, .pct, #range').forEach(e => e.addEventListener('input', update));
+  document.querySelectorAll('.size, .pct').forEach(e => e.addEventListener('input', update));
+  document.querySelectorAll('#rangeFrom, #rangeTo').forEach(e => e.addEventListener('input', onRangeInput));
   initForm();
   initExclusion();
   update();
