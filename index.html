@@ -1,1 +1,329 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard – czasy realizacji</title>
+<script src="vendor/chart.umd.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #181b24; --border: #2a2f3d; --text: #e4e7ef; --muted: #8b93a7;
+    --S: #4fc3f7; --M: #ffb74d; --L: #e57373;
+    --p50: #81c784; --p85: #ffd54f; --p90: #f06292;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 20px 28px 8px; }
+  h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
+  .sub { color: var(--muted); font-size: .9rem; margin-top: 4px; }
+  main { padding: 12px 28px 28px; display: grid; gap: 16px; grid-template-columns: 300px 1fr; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .panel h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .controls .group { margin-bottom: 22px; }
+  label.chk { display: flex; align-items: center; gap: 8px; margin: 6px 0; cursor: pointer; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .bar { width: 18px; height: 3px; display: inline-block; }
+  input[type=checkbox] { accent-color: #7c8cff; width: 16px; height: 16px; }
+  input[type=range] { width: 100%; accent-color: #7c8cff; }
+  .range-val { font-size: 1.1rem; font-weight: 600; margin-bottom: 6px; }
+  .range-dates { color: var(--muted); font-size: .85rem; margin-top: 6px; }
+  .ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: .7rem; padding: 0 2px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  @media (max-width: 600px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .stat .lbl { color: var(--muted); font-size: .8rem; }
+  .stat .val { font-size: 1.8rem; font-weight: 700; margin-top: 4px; }
+  .stat .val small { font-size: .9rem; font-weight: 400; color: var(--muted); }
+  .stat.off { opacity: .35; }
+  .chart-wrap { position: relative; height: 520px; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: 8px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; }
+  .note { color: var(--muted); font-size: .75rem; margin-top: 10px; line-height: 1.4; }
+  #status { color: var(--muted); font-size: .75rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Czasy realizacji – scatterplot i prognoza</h1>
+  <div class="sub">Źródło: <code>Lead Times - 2024-25.xlsx</code> <span id="status"></span></div>
+</header>
 
+<main>
+  <aside class="panel controls">
+    <div class="group">
+      <h2>Rozmiar</h2>
+      <label class="chk"><input type="checkbox" class="size" value="S" checked><span class="dot" style="background:var(--S)"></span>S</label>
+      <label class="chk"><input type="checkbox" class="size" value="M" checked><span class="dot" style="background:var(--M)"></span>M</label>
+      <label class="chk"><input type="checkbox" class="size" value="L" checked><span class="dot" style="background:var(--L)"></span>L</label>
+    </div>
+
+    <div class="group">
+      <h2>Percentyle</h2>
+      <label class="chk"><input type="checkbox" class="pct" value="50" checked><span class="bar" style="background:var(--p50)"></span>50. percentyl</label>
+      <label class="chk"><input type="checkbox" class="pct" value="85" checked><span class="bar" style="background:var(--p85)"></span>85. percentyl</label>
+      <label class="chk"><input type="checkbox" class="pct" value="90" checked><span class="bar" style="background:var(--p90)"></span>90. percentyl</label>
+    </div>
+
+    <div class="group">
+      <h2>Okres prognozy</h2>
+      <div class="range-val" id="rangeVal"></div>
+      <input type="range" id="range" min="1" step="1">
+      <div class="ticks" id="ticks"></div>
+      <div class="range-dates" id="rangeDates"></div>
+      <div class="note">Okres liczony wstecz od najnowszej daty ukończenia, co 3 miesiące. Punkty spoza okresu są wyszarzone i nie wchodzą do obliczeń.</div>
+    </div>
+
+    <div class="group">
+      <h2>Percentyle wg rozmiaru</h2>
+      <table id="breakdown"></table>
+    </div>
+  </aside>
+
+  <section>
+    <div class="stats">
+      <div class="stat" id="stat-n"><div class="lbl">Liczba elementów</div><div class="val">–</div></div>
+      <div class="stat" id="stat-50"><div class="lbl">50. percentyl</div><div class="val">–</div></div>
+      <div class="stat" id="stat-85"><div class="lbl">85. percentyl</div><div class="val">–</div></div>
+      <div class="stat" id="stat-90"><div class="lbl">90. percentyl</div><div class="val">–</div></div>
+    </div>
+    <div class="panel">
+      <div class="chart-wrap"><canvas id="chart"></canvas></div>
+      <div class="note">Percentyle liczone metodą interpolacji liniowej (jak PERCENTILE.INC w Excelu). Np. 85. percentyl = 85% elementów zostało zrealizowanych w tym czasie lub krócej.</div>
+    </div>
+  </section>
+</main>
+
+<script>
+const XLSX_FILE = 'Lead Times - 2024-25.xlsx';
+const SIZES = ['S', 'M', 'L'];
+const PCTS = [50, 85, 90];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const COLORS = { S: css('--S'), M: css('--M'), L: css('--L'), 50: css('--p50'), 85: css('--p85'), 90: css('--p90') };
+
+// Fallback, gdy nie da się wczytać pliku xlsx (np. otwarcie z dysku przez file://)
+const FALLBACK = [
+  ['15 Lipca 2024','S',49],['22 Sierpnia 2024','S',48],['10 Września 2024','S',87],['25 Września 2024','M',57],
+  ['5 Października 2024','M',148],['14 Października 2024','S',53],['28 Października 2024','S',45],['18 Listopada 2024','M',145],
+  ['4 Grudnia 2024','L',105],['8 Stycznia 2025','S',5],['20 Stycznia 2025','L',163],['14 Lutego 2025','S',43],
+  ['26 Lutego 2025','M',415],['15 Marca 2025','L',123],['10 Kwietnia 2025','M',103],['5 Maja 2025','L',104],
+  ['12 Czerwca 2025','L',302],['25 Czerwca 2025','L',158],['2 Lipca 2025','L',98],['11 Lipca 2025','S',52],
+  ['18 Lipca 2025','M',95],['29 Lipca 2025','S',70],['3 Sierpnia 2025','M',95],['14 Sierpnia 2025','M',101],
+  ['21 Sierpnia 2025','M',57],['29 Sierpnia 2025','M',57],['8 Września 2025','S',53],['22 Września 2025','L',137],
+  ['4 Października 2025','S',73],['12 Października 2025','M',60],['19 Października 2025','S',126],['27 Października 2025','M',57],
+  ['5 Listopada 2025','L',124],['15 Listopada 2025','M',75],['25 Listopada 2025','M',89],['10 Grudnia 2025','S',44]
+];
+
+const MONTHS = {
+  styczeń:0, stycznia:0, luty:1, lutego:1, marzec:2, marca:2, kwiecień:3, kwietnia:3, maj:4, maja:4,
+  czerwiec:5, czerwca:5, lipiec:6, lipca:6, sierpień:7, sierpnia:7, wrzesień:8, września:8,
+  październik:9, października:9, listopad:10, listopada:10, grudzień:11, grudnia:11
+};
+const MONTH_SHORT = ['sty','lut','mar','kwi','maj','cze','lip','sie','wrz','paź','lis','gru'];
+
+function parseDate(v) {
+  if (v instanceof Date) return new Date(v.getFullYear(), v.getMonth(), v.getDate());
+  if (typeof v === 'number') { const d = XLSX.SSF.parse_date_code(v); return new Date(d.y, d.m - 1, d.d); }
+  const s = String(v).trim();
+  const m = s.match(/^(\d{1,2})\s+(\p{L}+)\s+(\d{4})$/u);
+  if (m && MONTHS[m[2].toLowerCase()] !== undefined) return new Date(+m[3], MONTHS[m[2].toLowerCase()], +m[1]);
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return new Date(+iso[1], +iso[2] - 1, +iso[3]);
+  const dmy = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
+  if (dmy) return new Date(+dmy[3], +dmy[2] - 1, +dmy[1]);
+  return null;
+}
+
+function toRecords(rows) {
+  return rows.map(([d, size, lt]) => ({ date: parseDate(d), size: String(size || '').trim().toUpperCase(), lt: Number(lt) }))
+    .filter(r => r.date && !isNaN(r.date) && SIZES.includes(r.size) && isFinite(r.lt))
+    .sort((a, b) => a.date - b.date);
+}
+
+async function loadData() {
+  try {
+    if (typeof XLSX === 'undefined') throw new Error('Brak biblioteki XLSX');
+    const res = await fetch(encodeURIComponent(XLSX_FILE), { cache: 'no-cache' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const wb = XLSX.read(await res.arrayBuffer(), { type: 'array', cellDates: true });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, blankrows: false }).slice(1);
+    const recs = toRecords(rows);
+    if (!recs.length) throw new Error('Brak danych w pliku');
+    document.getElementById('status').textContent = `· wczytano ${recs.length} rekordów z pliku`;
+    return recs;
+  } catch (e) {
+    console.warn('Używam danych wbudowanych:', e);
+    document.getElementById('status').textContent = '· dane wbudowane (nie udało się wczytać pliku xlsx)';
+    return toRecords(FALLBACK);
+  }
+}
+
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = (p / 100) * (sorted.length - 1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
+const fmtDate = d => `${d.getDate()} ${MONTH_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+const fmtNum = v => v == null ? '–' : (Math.round(v * 10) / 10).toLocaleString('pl-PL');
+const monthsLabel = m => m === 3 ? '3 miesiące' : (m % 12 === 0 ? `${m} mies. (${m / 12} ${m === 12 ? 'rok' : 'lata'})` : `${m} miesięcy`);
+
+let data = [], chart, maxDate, minDate, totalSteps;
+
+function windowStart() {
+  const step = +document.getElementById('range').value;
+  if (step >= totalSteps) return null; // całość
+  const d = new Date(maxDate);
+  d.setMonth(d.getMonth() - step * 3);
+  return d;
+}
+
+function getState() {
+  const sizes = [...document.querySelectorAll('.size:checked')].map(e => e.value);
+  const pcts = [...document.querySelectorAll('.pct:checked')].map(e => +e.value);
+  return { sizes, pcts, start: windowStart() };
+}
+
+const inWindow = (r, start) => !start || r.date > start;
+
+function update() {
+  const { sizes, pcts, start } = getState();
+  const step = +document.getElementById('range').value;
+  document.getElementById('rangeVal').textContent = step >= totalSteps ? 'Całość danych' : 'Ostatnie ' + monthsLabel(step * 3);
+  document.getElementById('rangeDates').textContent = `${fmtDate(start ? new Date(start.getTime() + 864e5) : minDate)} – ${fmtDate(maxDate)}`;
+
+  const active = data.filter(r => sizes.includes(r.size) && inWindow(r, start));
+  const lts = active.map(r => r.lt).sort((a, b) => a - b);
+  const pv = {}; PCTS.forEach(p => pv[p] = percentile(lts, p));
+
+  document.querySelector('#stat-n .val').textContent = active.length;
+  PCTS.forEach(p => {
+    const el = document.getElementById('stat-' + p);
+    el.querySelector('.val').innerHTML = pv[p] == null ? '–' : `${fmtNum(pv[p])} <small>dni</small>`;
+    el.classList.toggle('off', !pcts.includes(p));
+    el.querySelector('.val').style.color = COLORS[p];
+  });
+
+  // Tabela wg rozmiaru (w wybranym okresie)
+  let html = '<tr><th>Rozmiar</th><th>n</th>' + PCTS.map(p => `<th>P${p}</th>`).join('') + '</tr>';
+  SIZES.forEach(s => {
+    const v = data.filter(r => r.size === s && inWindow(r, start)).map(r => r.lt).sort((a, b) => a - b);
+    html += `<tr style="opacity:${sizes.includes(s) ? 1 : .4}"><td><span class="dot" style="background:${COLORS[s]}"></span> ${s}</td><td>${v.length}</td>` +
+      PCTS.map(p => `<td>${fmtNum(percentile(v, p))}</td>`).join('') + '</tr>';
+  });
+  document.getElementById('breakdown').innerHTML = html;
+
+  chart.data.datasets = SIZES.filter(s => sizes.includes(s)).map(s => {
+    const pts = data.filter(r => r.size === s);
+    return {
+      label: s,
+      data: pts.map(r => ({ x: r.date.getTime(), y: r.lt })),
+      backgroundColor: pts.map(r => inWindow(r, start) ? COLORS[s] : COLORS[s] + '33'),
+      borderColor: pts.map(r => inWindow(r, start) ? COLORS[s] : COLORS[s] + '55'),
+      pointRadius: 6, pointHoverRadius: 8
+    };
+  });
+  chart.$overlay = { start, pcts: pcts.map(p => ({ p, v: pv[p] })).filter(o => o.v != null) };
+  chart.update();
+}
+
+const overlayPlugin = {
+  id: 'overlay',
+  beforeDatasetsDraw(c) {
+    const o = c.$overlay; if (!o || !o.start) return;
+    const { ctx, chartArea: a, scales: { x } } = c;
+    const px = Math.max(a.left, Math.min(a.right, x.getPixelForValue(o.start.getTime())));
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(a.left, a.top, px - a.left, a.bottom - a.top);
+    ctx.strokeStyle = '#7c8cff'; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+    ctx.restore();
+  },
+  afterDatasetsDraw(c) {
+    const o = c.$overlay; if (!o) return;
+    const { ctx, chartArea: a, scales: { x, y } } = c;
+    const left = o.start ? Math.max(a.left, x.getPixelForValue(o.start.getTime())) : a.left;
+    ctx.save();
+    const lines = o.pcts.map(({ p, v }) => ({ p, v, py: y.getPixelForValue(v) }))
+      .filter(l => l.py >= a.top && l.py <= a.bottom);
+    lines.forEach(({ p, py }) => {
+      ctx.strokeStyle = COLORS[p]; ctx.lineWidth = 2; ctx.setLineDash([8, 5]);
+      ctx.beginPath(); ctx.moveTo(left, py); ctx.lineTo(a.right, py); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    ctx.font = '600 12px system-ui, sans-serif';
+    // Etykiety nad liniami, rozsunięte, żeby się nie nakładały
+    let prevBottom = -Infinity;
+    lines.sort((l1, l2) => l1.py - l2.py).forEach(({ p, v, py }) => {
+      const top = Math.max(py - 18, prevBottom + 2, a.top);
+      prevBottom = top + 16;
+      const label = `P${p}: ${fmtNum(v)} dni`;
+      const w = ctx.measureText(label).width + 10;
+      ctx.fillStyle = '#0f1117dd'; ctx.fillRect(a.right - w - 4, top, w, 16);
+      ctx.fillStyle = COLORS[p]; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, a.right - 9, top + 8);
+    });
+    ctx.restore();
+  }
+};
+
+function initChart() {
+  Chart.defaults.color = '#8b93a7';
+  Chart.defaults.borderColor = '#2a2f3d';
+  const pad = 15 * 864e5;
+  chart = new Chart(document.getElementById('chart'), {
+    type: 'scatter',
+    data: { datasets: [] },
+    plugins: [overlayPlugin],
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
+      scales: {
+        x: {
+          type: 'linear', min: minDate.getTime() - pad, max: maxDate.getTime() + pad,
+          title: { display: true, text: 'Data ukończenia' },
+          afterBuildTicks: ax => {
+            const ticks = [];
+            const d = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+            while (d.getTime() <= ax.max) { if (d.getTime() >= ax.min) ticks.push({ value: d.getTime() }); d.setMonth(d.getMonth() + 1); }
+            ax.ticks = ticks;
+          },
+          ticks: { callback: v => { const d = new Date(v); return `${MONTH_SHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`; }, maxRotation: 0, autoSkip: true },
+          grid: { color: '#1f2330' }
+        },
+        y: { beginAtZero: true, title: { display: true, text: 'Czas realizacji [dni]' }, grid: { color: '#1f2330' } }
+      },
+      plugins: {
+        legend: { labels: { usePointStyle: true, color: '#e4e7ef',
+          generateLabels: c => c.data.datasets.map((d, i) => ({ text: d.label, fillStyle: COLORS[d.label], strokeStyle: COLORS[d.label], pointStyle: 'circle', hidden: !c.isDatasetVisible(i), datasetIndex: i, fontColor: '#e4e7ef' })) } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y} dni (${fmtDate(new Date(c.parsed.x))})` } }
+      }
+    }
+  });
+}
+
+function initRange() {
+  const months = (maxDate.getFullYear() - minDate.getFullYear()) * 12 + (maxDate.getMonth() - minDate.getMonth())
+    + (maxDate.getDate() >= minDate.getDate() ? 0 : -1);
+  totalSteps = Math.max(1, Math.ceil((months + 1) / 3));
+  const r = document.getElementById('range');
+  r.max = totalSteps; r.value = totalSteps;
+  document.getElementById('ticks').innerHTML = Array.from({ length: totalSteps }, (_, i) =>
+    `<span>${i + 1 === totalSteps ? 'Całość' : (i + 1) * 3}</span>`).join('');
+}
+
+(async () => {
+  data = await loadData();
+  minDate = data[0].date; maxDate = data[data.length - 1].date;
+  initRange();
+  initChart();
+  document.querySelectorAll('input').forEach(e => e.addEventListener('input', update));
+  update();
+})();
+</script>
+</body>
+</html>
