@@ -27,8 +27,6 @@
   .pbc-wrap.small { height: 260px; }
   .pbc-formulas { color: var(--muted); font-size: .85rem; line-height: 1.7; margin-bottom: 8px; }
   .pbc-formulas b { color: var(--text); font-weight: 600; }
-  .sig { color: #ef5350; font-weight: 700; }
-  #pbcTable tfoot td { font-weight: 600; border-top: 1px solid var(--muted); }
   h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
   .sub { color: var(--muted); font-size: .9rem; margin-top: 4px; }
   main { padding: 12px 28px 28px; display: grid; gap: 16px; grid-template-columns: 300px 1fr; }
@@ -203,9 +201,8 @@
     <div class="pbc-wrap small"><canvas id="pbcMR"></canvas></div>
   </div>
   <div class="panel">
-    <h2>Obliczenia ruchomych rozstępów (mR)</h2>
+    <h2>Obliczenia</h2>
     <div class="pbc-formulas" id="pbcFormulas"></div>
-    <table id="pbcTable"></table>
     <div class="note">Dane z pliku <code>Lead Times - 2024-25.xlsx</code> w kolejności dat ukończenia (bez ręcznych wpisów i wykluczeń z pierwszej zakładki). Czerwone wartości to sygnały: punkt poza granicami procesu (reguła 1 Shewharta).</div>
   </div>
 </section>
@@ -753,15 +750,6 @@ function renderPbc() {
   document.getElementById('pbcFormulas').innerHTML =
     `n = <b>${n}</b> &nbsp;·&nbsp; mRᵢ = |Xᵢ − Xᵢ₋₁| &nbsp;·&nbsp; X̄ = ΣX / n = ${fmtNum(s.sumX)} / ${n} = <b>${fmtNum(s.mean)}</b> &nbsp;·&nbsp; mR̄ = ΣmR / (n − 1) = ${fmtNum(s.sumMR)} / ${n - 1} = <b>${fmtNum(s.mrBar)}</b><br>` +
     `UNPL = X̄ + 2,66 · mR̄ = <b>${fmtNum(s.unpl)}</b> &nbsp;·&nbsp; LNPL = X̄ − 2,66 · mR̄ = <b>${fmtNum(s.lnpl)}</b>${s.lnpl < 0 ? ' → czas realizacji nie może być ujemny, więc granica = 0' : ''} &nbsp;·&nbsp; URL = 3,268 · mR̄ = <b>${fmtNum(s.url)}</b>`;
-
-  document.getElementById('pbcTable').innerHTML =
-    '<thead><tr><th>Nr</th><th>Data ukończenia</th><th>Rozmiar</th><th>Czas realizacji X [dni]</th><th>Xᵢ − Xᵢ₋₁</th><th>mR = |Xᵢ − Xᵢ₋₁| [dni]</th></tr></thead><tbody>' +
-    recs.map((r, i) => `<tr><td>${i + 1}</td><td>${toDMY(r.date)}</td><td><span class="dot" style="background:${COLORS[r.size]}"></span> ${r.size}</td>` +
-      `<td class="${outX(r.lt) ? 'sig' : ''}">${r.lt}</td>` +
-      `<td>${i ? `${r.lt} − ${xs[i - 1]} = ${r.lt - xs[i - 1]}` : '–'}</td>` +
-      `<td class="${outMR(s.mr[i]) ? 'sig' : ''}">${i ? s.mr[i] : '–'}</td></tr>`).join('') +
-    `</tbody><tfoot><tr><td colspan="3">Suma</td><td>${fmtNum(s.sumX)}</td><td></td><td>${fmtNum(s.sumMR)}</td></tr>` +
-    `<tr><td colspan="3">Średnia</td><td>X̄ = ${fmtNum(s.mean)}</td><td></td><td>mR̄ = ${fmtNum(s.mrBar)}</td></tr></tfoot>`;
 }
 
 function showTab(name) {
