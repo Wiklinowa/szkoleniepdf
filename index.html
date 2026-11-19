@@ -15,6 +15,20 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   header { padding: 20px 28px 8px; }
+  [hidden] { display: none !important; }
+  .tabs { display: flex; gap: 4px; margin: 4px 28px 0; border-bottom: 1px solid var(--border); }
+  .tab { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 10px 14px; font: inherit; font-size: .9rem; cursor: pointer; margin-bottom: -1px; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: #7c8cff; font-weight: 600; }
+  .pbc { padding: 12px 28px 28px; display: grid; gap: 16px; }
+  .pbc .stats { grid-template-columns: repeat(5, 1fr); margin-bottom: 0; }
+  @media (max-width: 800px) { .pbc .stats { grid-template-columns: repeat(2, 1fr); } }
+  .pbc-wrap { position: relative; height: 380px; }
+  .pbc-wrap.small { height: 260px; }
+  .pbc-formulas { color: var(--muted); font-size: .85rem; line-height: 1.7; margin-bottom: 8px; }
+  .pbc-formulas b { color: var(--text); font-weight: 600; }
+  .sig { color: #ef5350; font-weight: 700; }
+  #pbcTable tfoot td { font-weight: 600; border-top: 1px solid var(--muted); }
   h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
   .sub { color: var(--muted); font-size: .9rem; margin-top: 4px; }
   main { padding: 12px 28px 28px; display: grid; gap: 16px; grid-template-columns: 300px 1fr; }
@@ -89,7 +103,12 @@
   <div class="sub">Źródło: <code>Lead Times - 2024-25.xlsx</code> <span id="status"></span></div>
 </header>
 
-<main>
+<nav class="tabs" role="tablist">
+  <button type="button" class="tab active" data-tab="scatter" role="tab" aria-selected="true">Scatterplot i percentyle</button>
+  <button type="button" class="tab" data-tab="pbc" role="tab" aria-selected="false">Process Behaviour Chart (XmR)</button>
+</nav>
+
+<main id="tab-scatter">
   <aside class="panel controls">
     <div class="group">
       <h2>Rozmiar</h2>
@@ -172,6 +191,24 @@
     </div>
   </section>
 </main>
+
+<section id="tab-pbc" class="pbc" hidden>
+  <div class="stats" id="pbcStats"></div>
+  <div class="panel">
+    <h2>Wykres X – wartości indywidualne (czas realizacji)</h2>
+    <div class="pbc-wrap"><canvas id="pbcX"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Wykres mR – ruchome rozstępy</h2>
+    <div class="pbc-wrap small"><canvas id="pbcMR"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Obliczenia ruchomych rozstępów (mR)</h2>
+    <div class="pbc-formulas" id="pbcFormulas"></div>
+    <table id="pbcTable"></table>
+    <div class="note">Dane z pliku <code>Lead Times - 2024-25.xlsx</code> w kolejności dat ukończenia (bez ręcznych wpisów i wykluczeń z pierwszej zakładki). Czerwone wartości to sygnały: punkt poza granicami procesu (reguła 1 Shewharta).</div>
+  </div>
+</section>
 
 <script>
 const XLSX_FILE = 'Lead Times - 2024-25.xlsx';
@@ -639,7 +676,104 @@ function initExclusion() {
   initForm();
   initExclusion();
   update();
+  document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+  if (location.hash === '#pbc') showTab('pbc');
 })();
+
+// ---- Process Behaviour Chart (XmR wg Shewharta / Wheelera) ----
+const PBC_GREEN = '#66bb6a', PBC_RED = '#ef5350', PBC_BLUE = '#7c8cff';
+let pbcBuilt = false;
+
+function xmr(xs) {
+  const mr = xs.map((v, i) => i ? Math.abs(v - xs[i - 1]) : null);
+  const mrs = mr.slice(1);
+  const sumX = xs.reduce((a, b) => a + b, 0), sumMR = mrs.reduce((a, b) => a + b, 0);
+  const mean = sumX / xs.length, mrBar = mrs.length ? sumMR / mrs.length : 0;
+  return { mr, sumX, sumMR, mean, mrBar, unpl: mean + 2.66 * mrBar, lnpl: mean - 2.66 * mrBar, url: 3.268 * mrBar };
+}
+
+function pbcChart(canvas, labels, values, yTitle, lines, isSignal) {
+  const col = values.map((v, i) => isSignal(v, i) ? PBC_RED : PBC_BLUE);
+  return new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: yTitle, data: values, borderColor: PBC_BLUE + 'aa', borderWidth: 1.5, tension: 0,
+          pointBackgroundColor: col, pointBorderColor: col, pointRadius: values.map((v, i) => isSignal(v, i) ? 6 : 3.5), pointHoverRadius: 7 },
+        ...lines.map(l => ({ label: l.label, data: labels.map(() => l.value), borderColor: l.color, borderWidth: 2,
+          borderDash: l.dash || [], pointRadius: 0, pointHoverRadius: 0, fill: false }))
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { title: { display: true, text: 'Kolejne elementy (wg daty ukończenia)' }, ticks: { maxRotation: 60, autoSkip: true }, grid: { color: '#1f2330' } },
+        y: { beginAtZero: true, title: { display: true, text: yTitle }, grid: { color: '#1f2330' } }
+      },
+      plugins: {
+        legend: { labels: { color: '#e4e7ef', boxHeight: 3 } },
+        tooltip: { filter: i => i.datasetIndex === 0 && i.raw != null,
+          callbacks: { label: c => `${yTitle}: ${c.raw} dni${isSignal(c.raw, c.dataIndex) ? ' · SYGNAŁ' : ''}` } }
+      }
+    }
+  });
+}
+
+function renderPbc() {
+  if (pbcBuilt) return;
+  pbcBuilt = true;
+  const recs = [...baseData].sort((a, b) => a.date - b.date);
+  const xs = recs.map(r => r.lt);
+  const s = xmr(xs);
+  const lnplShown = Math.max(0, s.lnpl);
+  const labels = recs.map((r, i) => `${i + 1}. ${toDMY(r.date).slice(0, 6)}${String(r.date.getFullYear()).slice(2)}`);
+  const outX = v => v > s.unpl || v < s.lnpl;
+  const outMR = v => v != null && v > s.url;
+
+  const card = (lbl, v, color) => `<div class="stat"><div class="lbl">${lbl}</div><div class="val" style="color:${color}">${fmtNum(v)} <small>dni</small></div></div>`;
+  document.getElementById('pbcStats').innerHTML =
+    card('Średnia X̄', s.mean, PBC_GREEN) + card('UNPL', s.unpl, PBC_RED) + card('LNPL', lnplShown, PBC_RED) +
+    card('Średni ruchomy rozstęp mR̄', s.mrBar, PBC_GREEN) + card('URL (górna granica mR)', s.url, PBC_RED);
+
+  pbcChart(document.getElementById('pbcX'), labels, xs, 'Czas realizacji [dni]', [
+    { label: `Średnia X̄ = ${fmtNum(s.mean)}`, value: s.mean, color: PBC_GREEN },
+    { label: `UNPL = ${fmtNum(s.unpl)}`, value: s.unpl, color: PBC_RED, dash: [8, 5] },
+    { label: s.lnpl < 0 ? `LNPL = 0 (wyliczona ${fmtNum(s.lnpl)})` : `LNPL = ${fmtNum(s.lnpl)}`, value: lnplShown, color: PBC_RED, dash: [8, 5] }
+  ], outX);
+
+  pbcChart(document.getElementById('pbcMR'), labels, s.mr, 'Ruchomy rozstęp mR [dni]', [
+    { label: `mR̄ = ${fmtNum(s.mrBar)}`, value: s.mrBar, color: PBC_GREEN },
+    { label: `URL = ${fmtNum(s.url)}`, value: s.url, color: PBC_RED, dash: [8, 5] },
+    { label: 'LRL = 0', value: 0, color: PBC_RED, dash: [8, 5] }
+  ], outMR);
+
+  const n = xs.length;
+  document.getElementById('pbcFormulas').innerHTML =
+    `n = <b>${n}</b> &nbsp;·&nbsp; mRᵢ = |Xᵢ − Xᵢ₋₁| &nbsp;·&nbsp; X̄ = ΣX / n = ${fmtNum(s.sumX)} / ${n} = <b>${fmtNum(s.mean)}</b> &nbsp;·&nbsp; mR̄ = ΣmR / (n − 1) = ${fmtNum(s.sumMR)} / ${n - 1} = <b>${fmtNum(s.mrBar)}</b><br>` +
+    `UNPL = X̄ + 2,66 · mR̄ = <b>${fmtNum(s.unpl)}</b> &nbsp;·&nbsp; LNPL = X̄ − 2,66 · mR̄ = <b>${fmtNum(s.lnpl)}</b>${s.lnpl < 0 ? ' → czas realizacji nie może być ujemny, więc granica = 0' : ''} &nbsp;·&nbsp; URL = 3,268 · mR̄ = <b>${fmtNum(s.url)}</b>`;
+
+  document.getElementById('pbcTable').innerHTML =
+    '<thead><tr><th>Nr</th><th>Data ukończenia</th><th>Rozmiar</th><th>Czas realizacji X [dni]</th><th>Xᵢ − Xᵢ₋₁</th><th>mR = |Xᵢ − Xᵢ₋₁| [dni]</th></tr></thead><tbody>' +
+    recs.map((r, i) => `<tr><td>${i + 1}</td><td>${toDMY(r.date)}</td><td><span class="dot" style="background:${COLORS[r.size]}"></span> ${r.size}</td>` +
+      `<td class="${outX(r.lt) ? 'sig' : ''}">${r.lt}</td>` +
+      `<td>${i ? `${r.lt} − ${xs[i - 1]} = ${r.lt - xs[i - 1]}` : '–'}</td>` +
+      `<td class="${outMR(s.mr[i]) ? 'sig' : ''}">${i ? s.mr[i] : '–'}</td></tr>`).join('') +
+    `</tbody><tfoot><tr><td colspan="3">Suma</td><td>${fmtNum(s.sumX)}</td><td></td><td>${fmtNum(s.sumMR)}</td></tr>` +
+    `<tr><td colspan="3">Średnia</td><td>X̄ = ${fmtNum(s.mean)}</td><td></td><td>mR̄ = ${fmtNum(s.mrBar)}</td></tr></tfoot>`;
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(b => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle('active', on); b.setAttribute('aria-selected', on);
+  });
+  document.getElementById('tab-scatter').hidden = name !== 'scatter';
+  document.getElementById('tab-pbc').hidden = name !== 'pbc';
+  if (name === 'pbc') renderPbc();
+  history.replaceState(null, '', name === 'pbc' ? '#pbc' : location.pathname + location.search);
+}
 </script>
 </body>
 </html>
