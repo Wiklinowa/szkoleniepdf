@@ -101,12 +101,13 @@
 <body>
 <header>
   <h1>Czasy realizacji – scatterplot i prognoza</h1>
-  <div class="sub">Źródło: <code>Lead Times - 2024-25.xlsx</code> <span id="status"></span></div>
+  <div class="sub">Źródło: <code id="srcFile">Lead Times - 2024-25.xlsx</code> <span id="status"></span></div>
 </header>
 
 <nav class="tabs" role="tablist">
   <button type="button" class="tab active" data-tab="scatter" role="tab" aria-selected="true">Scatterplot i percentyle</button>
   <button type="button" class="tab" data-tab="pbc" role="tab" aria-selected="false">Process Behaviour Chart (XmR)</button>
+  <button type="button" class="tab" data-tab="throughput" role="tab" aria-selected="false">Przepustowość – PBC (XmR)</button>
 </nav>
 
 <main id="tab-scatter">
@@ -215,6 +216,28 @@
   </div>
 </section>
 
+<section id="tab-throughput" class="pbc" hidden>
+  <div class="stats" id="tpStats"></div>
+  <div class="panel">
+    <h2>Wykres X – wartości indywidualne (przepustowość dzienna)</h2>
+    <div class="pbc-wrap"><canvas id="tpX"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Wykres mR – ruchome rozstępy</h2>
+    <div class="pbc-wrap small"><canvas id="tpMR"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Sygnały</h2>
+    <table id="tpSignals"></table>
+    <div class="note">Punkty spełniające regułę 1 są na wykresach czerwone, a reguły 2–4 – pomarańczowe. Na wykresie mR stosuje się tylko regułę 1.</div>
+  </div>
+  <div class="panel">
+    <h2>Obliczenia</h2>
+    <div class="pbc-formulas" id="tpFormulas"></div>
+    <div class="note">Dane z pliku <code>Throughput Daily.xlsx</code> – liczba elementów ukończonych każdego dnia, w kolejności dat. <span id="tpStatus"></span></div>
+  </div>
+</section>
+
 <script>
 const XLSX_FILE = 'Lead Times - 2024-25.xlsx';
 const SIZES = ['S', 'M', 'L'];
@@ -234,6 +257,10 @@ const FALLBACK = [
   ['4 Października 2025','S',73],['12 Października 2025','M',60],['19 Października 2025','S',126],['27 Października 2025','M',57],
   ['5 Listopada 2025','L',124],['15 Listopada 2025','M',75],['25 Listopada 2025','M',89],['10 Grudnia 2025','S',44]
 ];
+
+const TP_FILE = 'Throughput Daily.xlsx';
+// Fallback przepustowości: kolejne dni od 07/01/2025
+const TP_FALLBACK = [0,2,10,3,0,0,2,3,7,0,0,0,0,5,2,0,0,0,0,0,1,1,0,5,4,0,0,7,0,2,2,12,0,0,1,0,0,2,12,0,0,1,0,0,3,11,0,0,6,0,0,6,7,0,0,2,0,0,3,5,0,0,1,0,0,9,7,0,0,3,0,0,4,10,0,0,1,0,0,5,1,0,0,2,0,0,2,11,0,0,1,0,0,5,2,0,0,1,0,0,4,7,0];
 
 const MONTHS = {
   styczeń:0, stycznia:0, luty:1, lutego:1, marzec:2, marca:2, kwiecień:3, kwietnia:3, maj:4, maja:4,
@@ -259,6 +286,25 @@ function toRecords(rows) {
   return rows.map(([d, size, lt]) => ({ date: parseDate(d), size: String(size || '').trim().toUpperCase(), lt: Number(lt) }))
     .filter(r => r.date && !isNaN(r.date) && SIZES.includes(r.size) && isFinite(r.lt))
     .sort((a, b) => a.date - b.date);
+}
+
+async function loadThroughput() {
+  try {
+    if (typeof XLSX === 'undefined') throw new Error('Brak biblioteki XLSX');
+    const res = await fetch(encodeURIComponent(TP_FILE), { cache: 'no-cache' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const wb = XLSX.read(await res.arrayBuffer(), { type: 'array', cellDates: true });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, blankrows: false }).slice(1);
+    const recs = rows.filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
+      .map(([d, v]) => ({ date: parseDate(d), value: Number(v) }))
+      .filter(r => r.date && !isNaN(r.date) && isFinite(r.value)).sort((a, b) => a.date - b.date);
+    if (!recs.length) throw new Error('Brak danych w pliku');
+    return { recs, status: `Wczytano ${recs.length} dni z pliku.` };
+  } catch (e) {
+    console.warn('Przepustowość – używam danych wbudowanych:', e);
+    const recs = TP_FALLBACK.map((value, i) => ({ date: new Date(2025, 0, 7 + i), value }));
+    return { recs, status: 'Dane wbudowane (nie udało się wczytać pliku xlsx).' };
+  }
 }
 
 async function loadData() {
@@ -682,12 +728,12 @@ function initExclusion() {
   initExclusion();
   update();
   document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
-  if (location.hash === '#pbc') showTab('pbc');
+  if (['#pbc', '#throughput'].includes(location.hash)) showTab(location.hash.slice(1));
 })();
 
 // ---- Process Behaviour Chart (XmR wg Shewharta / Wheelera) ----
 const PBC_GREEN = '#66bb6a', PBC_RED = '#ef5350', PBC_BLUE = '#7c8cff', PBC_ORANGE = '#ffa726';
-let pbcBuilt = false;
+const pbcBuilt = new Set();
 
 function xmr(xs) {
   const mr = xs.map((v, i) => i ? Math.abs(v - xs[i - 1]) : null);
@@ -726,7 +772,7 @@ function pbcSignals(xs, s) {
 }
 
 // rulesAt(i) zwraca numery reguł spełnionych przez punkt i (reguła 1 → czerwony, pozostałe → pomarańczowy).
-function pbcChart(canvas, labels, values, yTitle, lines, rulesAt) {
+function pbcChart(canvas, labels, values, yTitle, lines, rulesAt, unit, xTitle) {
   const col = values.map((v, i) => { const r = rulesAt(i); return !r.length ? PBC_BLUE : r.includes(1) ? PBC_RED : PBC_ORANGE; });
   return new Chart(canvas, {
     type: 'line',
@@ -743,23 +789,21 @@ function pbcChart(canvas, labels, values, yTitle, lines, rulesAt) {
       responsive: true, maintainAspectRatio: false, animation: false,
       interaction: { mode: 'index', intersect: false },
       scales: {
-        x: { title: { display: true, text: 'Kolejne elementy (wg daty ukończenia)' }, ticks: { maxRotation: 60, autoSkip: true }, grid: { color: '#1f2330' } },
+        x: { title: { display: true, text: xTitle }, ticks: { maxRotation: 60, autoSkip: true }, grid: { color: '#1f2330' } },
         y: { beginAtZero: true, title: { display: true, text: yTitle }, grid: { color: '#1f2330' } }
       },
       plugins: {
         legend: { labels: { color: '#e4e7ef', boxHeight: 3 } },
         tooltip: { filter: i => i.datasetIndex === 0 && i.raw != null,
-          callbacks: { label: c => { const r = rulesAt(c.dataIndex); return `${yTitle}: ${c.raw} dni${r.length ? ` · SYGNAŁ (reguła ${r.join(', ')})` : ''}`; } } }
+          callbacks: { label: c => { const r = rulesAt(c.dataIndex); return `${yTitle}: ${fmtNum(c.raw)} ${unit}${r.length ? ` · SYGNAŁ (reguła ${r.join(', ')})` : ''}`; } } }
       }
     }
   });
 }
 
-function renderPbc() {
-  if (pbcBuilt) return;
-  pbcBuilt = true;
-  const recs = [...baseData].sort((a, b) => a.date - b.date);
-  const xs = recs.map(r => r.lt);
+// Wspólny widok XmR: id elementów = prefix + Stats/X/MR/Signals/Formulas.
+function renderXmR(p, cfg) {
+  const recs = cfg.recs, xs = recs.map(cfg.value), u = cfg.unit, $ = id => document.getElementById(p + id);
   const s = xmr(xs);
   const lnplShown = Math.max(0, s.lnpl);
   const labels = recs.map((r, i) => `${i + 1}. ${toDMY(r.date).slice(0, 6)}${String(r.date.getFullYear()).slice(2)}`);
@@ -768,27 +812,27 @@ function renderPbc() {
   const rulesX = i => [1, 2, 3, 4].filter(n => sigX[n - 1].has(i));
   const rulesMR = i => sigMR.has(i) ? [1] : [];
 
-  const card = (lbl, v, color) => `<div class="stat"><div class="lbl">${lbl}</div><div class="val" style="color:${color}">${fmtNum(v)} <small>dni</small></div></div>`;
-  document.getElementById('pbcStats').innerHTML =
+  const card = (lbl, v, color) => `<div class="stat"><div class="lbl">${lbl}</div><div class="val" style="color:${color}">${fmtNum(v)} <small>${u}</small></div></div>`;
+  $('Stats').innerHTML =
     card('Średnia X̄', s.mean, PBC_GREEN) + card('UNPL', s.unpl, PBC_RED) + card('LNPL', lnplShown, PBC_RED) +
     card('Średni ruchomy rozstęp mR̄', s.mrBar, PBC_GREEN) + card('URL (górna granica mR)', s.url, PBC_RED);
 
-  pbcChart(document.getElementById('pbcX'), labels, xs, 'Czas realizacji [dni]', [
+  pbcChart($('X'), labels, xs, cfg.yTitle, [
     { label: `Średnia X̄ = ${fmtNum(s.mean)}`, value: s.mean, color: PBC_GREEN },
     { label: `UNPL = ${fmtNum(s.unpl)}`, value: s.unpl, color: PBC_RED, dash: [8, 5] },
     { label: s.lnpl < 0 ? `LNPL = 0 (wyliczona ${fmtNum(s.lnpl)})` : `LNPL = ${fmtNum(s.lnpl)}`, value: lnplShown, color: PBC_RED, dash: [8, 5] }
-  ], rulesX);
+  ], rulesX, u, cfg.xTitle);
 
-  pbcChart(document.getElementById('pbcMR'), labels, s.mr, 'Ruchomy rozstęp mR [dni]', [
+  pbcChart($('MR'), labels, s.mr, `Ruchomy rozstęp mR [${u}]`, [
     { label: `mR̄ = ${fmtNum(s.mrBar)}`, value: s.mrBar, color: PBC_GREEN },
     { label: `URL = ${fmtNum(s.url)}`, value: s.url, color: PBC_RED, dash: [8, 5] },
     { label: 'LRL = 0', value: 0, color: PBC_RED, dash: [8, 5] }
-  ], rulesMR);
+  ], rulesMR, u, cfg.xTitle);
 
   const n = xs.length;
-  document.getElementById('pbcFormulas').innerHTML =
+  $('Formulas').innerHTML =
     `n = <b>${n}</b> &nbsp;·&nbsp; mRᵢ = |Xᵢ − Xᵢ₋₁| &nbsp;·&nbsp; X̄ = ΣX / n = ${fmtNum(s.sumX)} / ${n} = <b>${fmtNum(s.mean)}</b> &nbsp;·&nbsp; mR̄ = ΣmR / (n − 1) = ${fmtNum(s.sumMR)} / ${n - 1} = <b>${fmtNum(s.mrBar)}</b><br>` +
-    `UNPL = X̄ + 2,66 · mR̄ = <b>${fmtNum(s.unpl)}</b> &nbsp;·&nbsp; LNPL = X̄ − 2,66 · mR̄ = <b>${fmtNum(s.lnpl)}</b>${s.lnpl < 0 ? ' → czas realizacji nie może być ujemny, więc granica = 0' : ''} &nbsp;·&nbsp; URL = 3,268 · mR̄ = <b>${fmtNum(s.url)}</b><br>` +
+    `UNPL = X̄ + 2,66 · mR̄ = <b>${fmtNum(s.unpl)}</b> &nbsp;·&nbsp; LNPL = X̄ − 2,66 · mR̄ = <b>${fmtNum(s.lnpl)}</b>${s.lnpl < 0 ? ` → ${cfg.nonNegative}, więc granica = 0` : ''} &nbsp;·&nbsp; URL = 3,268 · mR̄ = <b>${fmtNum(s.url)}</b><br>` +
     `σ = mR̄ / 1,128 = <b>${fmtNum(s.sigma)}</b> &nbsp;·&nbsp; X̄ ± 1σ = ${fmtNum(s.mean - s.sigma)} … ${fmtNum(s.mean + s.sigma)} &nbsp;·&nbsp; X̄ ± 2σ = ${fmtNum(s.mean - 2 * s.sigma)} … ${fmtNum(s.mean + 2 * s.sigma)}`;
 
   const status = set => set.size
@@ -800,10 +844,32 @@ function renderPbc() {
     ['Reguła 3', '4 z 5 kolejnych punktów dalej niż 1σ od średniej, po tej samej stronie.'],
     ['Reguła 4', '8 kolejnych punktów po tej samej stronie średniej.']
   ];
-  document.getElementById('pbcSignals').innerHTML =
+  $('Signals').innerHTML =
     '<thead><tr><th>Sygnał</th><th>Opis</th><th>Wykres X</th><th>Wykres mR</th></tr></thead><tbody>' +
     rules.map(([name, desc], k) => `<tr><td><b>${name}</b></td><td>${desc}</td><td>${status(sigX[k])}</td>` +
       `<td>${k === 0 ? status(sigMR) : '<span class="sig-na">nie dotyczy</span>'}</td></tr>`).join('') + '</tbody>';
+}
+
+function renderPbc() {
+  if (pbcBuilt.has('pbc')) return;
+  pbcBuilt.add('pbc');
+  renderXmR('pbc', {
+    recs: [...baseData].sort((a, b) => a.date - b.date), value: r => r.lt, unit: 'dni',
+    yTitle: 'Czas realizacji [dni]', xTitle: 'Kolejne elementy (wg daty ukończenia)',
+    nonNegative: 'czas realizacji nie może być ujemny'
+  });
+}
+
+async function renderThroughput() {
+  if (pbcBuilt.has('tp')) return;
+  pbcBuilt.add('tp');
+  const { recs, status } = await loadThroughput();
+  document.getElementById('tpStatus').textContent = status;
+  renderXmR('tp', {
+    recs, value: r => r.value, unit: 'szt.',
+    yTitle: 'Przepustowość [szt./dzień]', xTitle: 'Kolejne dni',
+    nonNegative: 'przepustowość nie może być ujemna'
+  });
 }
 
 function showTab(name) {
@@ -813,8 +879,12 @@ function showTab(name) {
   });
   document.getElementById('tab-scatter').hidden = name !== 'scatter';
   document.getElementById('tab-pbc').hidden = name !== 'pbc';
+  document.getElementById('tab-throughput').hidden = name !== 'throughput';
+  document.getElementById('srcFile').textContent = name === 'throughput' ? TP_FILE : XLSX_FILE;
+  document.getElementById('status').hidden = name === 'throughput';
   if (name === 'pbc') renderPbc();
-  history.replaceState(null, '', name === 'pbc' ? '#pbc' : location.pathname + location.search);
+  if (name === 'throughput') renderThroughput();
+  history.replaceState(null, '', name === 'scatter' ? location.pathname + location.search : '#' + name);
 }
 </script>
 </body>
