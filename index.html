@@ -27,6 +27,9 @@
   .pbc-wrap.small { height: 260px; }
   .pbc-formulas { color: var(--muted); font-size: .85rem; line-height: 1.7; margin-bottom: 8px; }
   .pbc-formulas b { color: var(--text); font-weight: 600; }
+  .sig-yes { color: #ef5350; font-weight: 700; }
+  .sig-no { color: #66bb6a; font-weight: 600; }
+  .sig-na, .sig-n { color: var(--muted); }
   h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
   .sub { color: var(--muted); font-size: .9rem; margin-top: 4px; }
   main { padding: 12px 28px 28px; display: grid; gap: 16px; grid-template-columns: 300px 1fr; }
@@ -201,9 +204,14 @@
     <div class="pbc-wrap small"><canvas id="pbcMR"></canvas></div>
   </div>
   <div class="panel">
+    <h2>Sygnały</h2>
+    <table id="pbcSignals"></table>
+    <div class="note">Punkty spełniające regułę 1 są na wykresach czerwone, a reguły 2–4 – pomarańczowe. Na wykresie mR stosuje się tylko regułę 1.</div>
+  </div>
+  <div class="panel">
     <h2>Obliczenia</h2>
     <div class="pbc-formulas" id="pbcFormulas"></div>
-    <div class="note">Dane z pliku <code>Lead Times - 2024-25.xlsx</code> w kolejności dat ukończenia (bez ręcznych wpisów i wykluczeń z pierwszej zakładki). Czerwone wartości to sygnały: punkt poza granicami procesu (reguła 1 Shewharta).</div>
+    <div class="note">Dane z pliku <code>Lead Times - 2024-25.xlsx</code> w kolejności dat ukończenia (bez ręcznych wpisów i wykluczeń z pierwszej zakładki).</div>
   </div>
 </section>
 
@@ -678,7 +686,7 @@ function initExclusion() {
 })();
 
 // ---- Process Behaviour Chart (XmR wg Shewharta / Wheelera) ----
-const PBC_GREEN = '#66bb6a', PBC_RED = '#ef5350', PBC_BLUE = '#7c8cff';
+const PBC_GREEN = '#66bb6a', PBC_RED = '#ef5350', PBC_BLUE = '#7c8cff', PBC_ORANGE = '#ffa726';
 let pbcBuilt = false;
 
 function xmr(xs) {
@@ -686,18 +694,47 @@ function xmr(xs) {
   const mrs = mr.slice(1);
   const sumX = xs.reduce((a, b) => a + b, 0), sumMR = mrs.reduce((a, b) => a + b, 0);
   const mean = sumX / xs.length, mrBar = mrs.length ? sumMR / mrs.length : 0;
-  return { mr, sumX, sumMR, mean, mrBar, unpl: mean + 2.66 * mrBar, lnpl: mean - 2.66 * mrBar, url: 3.268 * mrBar };
+  return { mr, sumX, sumMR, mean, mrBar, sigma: mrBar / 1.128, unpl: mean + 2.66 * mrBar, lnpl: mean - 2.66 * mrBar, url: 3.268 * mrBar };
 }
 
-function pbcChart(canvas, labels, values, yTitle, lines, isSignal) {
-  const col = values.map((v, i) => isSignal(v, i) ? PBC_RED : PBC_BLUE);
+// Cztery reguły detekcji (Wheeler / Western Electric) dla wykresu X; σ = mR̄ / 1,128.
+function pbcSignals(xs, s) {
+  const flagged = () => new Set();
+  const r = [flagged(), flagged(), flagged(), flagged()];
+  xs.forEach((v, i) => { if (v > s.unpl || v < s.lnpl) r[0].add(i); });
+  const windowRule = (set, len, need, k) => {
+    for (const side of [1, -1]) {
+      const beyond = v => side * (v - s.mean) > k * s.sigma;
+      for (let i = 0; i + len <= xs.length; i++) {
+        const idx = [];
+        for (let j = i; j < i + len; j++) if (beyond(xs[j])) idx.push(j);
+        if (idx.length >= need) idx.forEach(j => set.add(j));
+      }
+    }
+  };
+  windowRule(r[1], 3, 2, 2);
+  windowRule(r[2], 5, 4, 1);
+  let start = 0;
+  for (let i = 1; i <= xs.length; i++) {
+    const side = v => Math.sign(v - s.mean);
+    if (i === xs.length || side(xs[i]) !== side(xs[start]) || side(xs[i]) === 0) {
+      if (side(xs[start]) !== 0 && i - start >= 8) for (let j = start; j < i; j++) r[3].add(j);
+      start = i;
+    }
+  }
+  return r;
+}
+
+// rulesAt(i) zwraca numery reguł spełnionych przez punkt i (reguła 1 → czerwony, pozostałe → pomarańczowy).
+function pbcChart(canvas, labels, values, yTitle, lines, rulesAt) {
+  const col = values.map((v, i) => { const r = rulesAt(i); return !r.length ? PBC_BLUE : r.includes(1) ? PBC_RED : PBC_ORANGE; });
   return new Chart(canvas, {
     type: 'line',
     data: {
       labels,
       datasets: [
         { label: yTitle, data: values, borderColor: PBC_BLUE + 'aa', borderWidth: 1.5, tension: 0,
-          pointBackgroundColor: col, pointBorderColor: col, pointRadius: values.map((v, i) => isSignal(v, i) ? 6 : 3.5), pointHoverRadius: 7 },
+          pointBackgroundColor: col, pointBorderColor: col, pointRadius: values.map((v, i) => rulesAt(i).length ? 6 : 3.5), pointHoverRadius: 7 },
         ...lines.map(l => ({ label: l.label, data: labels.map(() => l.value), borderColor: l.color, borderWidth: 2,
           borderDash: l.dash || [], pointRadius: 0, pointHoverRadius: 0, fill: false }))
       ]
@@ -712,7 +749,7 @@ function pbcChart(canvas, labels, values, yTitle, lines, isSignal) {
       plugins: {
         legend: { labels: { color: '#e4e7ef', boxHeight: 3 } },
         tooltip: { filter: i => i.datasetIndex === 0 && i.raw != null,
-          callbacks: { label: c => `${yTitle}: ${c.raw} dni${isSignal(c.raw, c.dataIndex) ? ' · SYGNAŁ' : ''}` } }
+          callbacks: { label: c => { const r = rulesAt(c.dataIndex); return `${yTitle}: ${c.raw} dni${r.length ? ` · SYGNAŁ (reguła ${r.join(', ')})` : ''}`; } } }
       }
     }
   });
@@ -726,8 +763,10 @@ function renderPbc() {
   const s = xmr(xs);
   const lnplShown = Math.max(0, s.lnpl);
   const labels = recs.map((r, i) => `${i + 1}. ${toDMY(r.date).slice(0, 6)}${String(r.date.getFullYear()).slice(2)}`);
-  const outX = v => v > s.unpl || v < s.lnpl;
-  const outMR = v => v != null && v > s.url;
+  const sigX = pbcSignals(xs, s);
+  const sigMR = new Set(s.mr.flatMap((v, i) => v != null && v > s.url ? [i] : []));
+  const rulesX = i => [1, 2, 3, 4].filter(n => sigX[n - 1].has(i));
+  const rulesMR = i => sigMR.has(i) ? [1] : [];
 
   const card = (lbl, v, color) => `<div class="stat"><div class="lbl">${lbl}</div><div class="val" style="color:${color}">${fmtNum(v)} <small>dni</small></div></div>`;
   document.getElementById('pbcStats').innerHTML =
@@ -738,18 +777,33 @@ function renderPbc() {
     { label: `Średnia X̄ = ${fmtNum(s.mean)}`, value: s.mean, color: PBC_GREEN },
     { label: `UNPL = ${fmtNum(s.unpl)}`, value: s.unpl, color: PBC_RED, dash: [8, 5] },
     { label: s.lnpl < 0 ? `LNPL = 0 (wyliczona ${fmtNum(s.lnpl)})` : `LNPL = ${fmtNum(s.lnpl)}`, value: lnplShown, color: PBC_RED, dash: [8, 5] }
-  ], outX);
+  ], rulesX);
 
   pbcChart(document.getElementById('pbcMR'), labels, s.mr, 'Ruchomy rozstęp mR [dni]', [
     { label: `mR̄ = ${fmtNum(s.mrBar)}`, value: s.mrBar, color: PBC_GREEN },
     { label: `URL = ${fmtNum(s.url)}`, value: s.url, color: PBC_RED, dash: [8, 5] },
     { label: 'LRL = 0', value: 0, color: PBC_RED, dash: [8, 5] }
-  ], outMR);
+  ], rulesMR);
 
   const n = xs.length;
   document.getElementById('pbcFormulas').innerHTML =
     `n = <b>${n}</b> &nbsp;·&nbsp; mRᵢ = |Xᵢ − Xᵢ₋₁| &nbsp;·&nbsp; X̄ = ΣX / n = ${fmtNum(s.sumX)} / ${n} = <b>${fmtNum(s.mean)}</b> &nbsp;·&nbsp; mR̄ = ΣmR / (n − 1) = ${fmtNum(s.sumMR)} / ${n - 1} = <b>${fmtNum(s.mrBar)}</b><br>` +
-    `UNPL = X̄ + 2,66 · mR̄ = <b>${fmtNum(s.unpl)}</b> &nbsp;·&nbsp; LNPL = X̄ − 2,66 · mR̄ = <b>${fmtNum(s.lnpl)}</b>${s.lnpl < 0 ? ' → czas realizacji nie może być ujemny, więc granica = 0' : ''} &nbsp;·&nbsp; URL = 3,268 · mR̄ = <b>${fmtNum(s.url)}</b>`;
+    `UNPL = X̄ + 2,66 · mR̄ = <b>${fmtNum(s.unpl)}</b> &nbsp;·&nbsp; LNPL = X̄ − 2,66 · mR̄ = <b>${fmtNum(s.lnpl)}</b>${s.lnpl < 0 ? ' → czas realizacji nie może być ujemny, więc granica = 0' : ''} &nbsp;·&nbsp; URL = 3,268 · mR̄ = <b>${fmtNum(s.url)}</b><br>` +
+    `σ = mR̄ / 1,128 = <b>${fmtNum(s.sigma)}</b> &nbsp;·&nbsp; X̄ ± 1σ = ${fmtNum(s.mean - s.sigma)} … ${fmtNum(s.mean + s.sigma)} &nbsp;·&nbsp; X̄ ± 2σ = ${fmtNum(s.mean - 2 * s.sigma)} … ${fmtNum(s.mean + 2 * s.sigma)}`;
+
+  const status = set => set.size
+    ? `<span class="sig-yes">Spełniony</span> <span class="sig-n">(${set.size} pkt)</span>`
+    : '<span class="sig-no">Niespełniony</span>';
+  const rules = [
+    ['Reguła 1', 'Punkt poza granicami procesu (powyżej UNPL / poniżej LNPL; dla mR – powyżej URL).'],
+    ['Reguła 2', '2 z 3 kolejnych punktów dalej niż 2σ od średniej, po tej samej stronie.'],
+    ['Reguła 3', '4 z 5 kolejnych punktów dalej niż 1σ od średniej, po tej samej stronie.'],
+    ['Reguła 4', '8 kolejnych punktów po tej samej stronie średniej.']
+  ];
+  document.getElementById('pbcSignals').innerHTML =
+    '<thead><tr><th>Sygnał</th><th>Opis</th><th>Wykres X</th><th>Wykres mR</th></tr></thead><tbody>' +
+    rules.map(([name, desc], k) => `<tr><td><b>${name}</b></td><td>${desc}</td><td>${status(sigX[k])}</td>` +
+      `<td>${k === 0 ? status(sigMR) : '<span class="sig-na">nie dotyczy</span>'}</td></tr>`).join('') + '</tbody>';
 }
 
 function showTab(name) {
